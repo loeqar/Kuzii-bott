@@ -451,7 +451,7 @@ client.on('interactionCreate', async interaction => {
         if (isTemp) {
             banMs = convertMs(timeStr);
             if (!banMs || banMs <= 0) {
-                return interaction.reply({ content: '⚠ Geçerli bir süre girmelisiniz (Örn: 1s, 3g)!', ephemeral: true });
+                return interaction.reply({ content: '⚠️ Geçerli bir süre girmelisiniz (Örn: 1s, 3g)!', ephemeral: true });
             }
         }
 
@@ -481,7 +481,7 @@ client.on('interactionCreate', async interaction => {
             { name: '👤 İşlem Alan', value: `${target} (${target.id})`, inline: false },
             { name: '👮 Yetkili', value: `${interaction.user}`, inline: true },
             ...(isTemp ? [{ name: '⏳ Süre', value: timeStr, inline: true }] : []),
-            { name: '⚠ Sebep', value: reason, inline: false }
+            { name: '⚠️ Sebep', value: reason, inline: false }
         ];
 
         const logEmbed = new EmbedBuilder()
@@ -565,7 +565,7 @@ client.on('interactionCreate', async interaction => {
                 addStat(guildId, interaction.user.id, 'kick');
                 logGonder(interaction.guild, settings, kickLogEmbed);
             } else {
-                return interaction.reply({ content: '⚠ İşlem başarısız! Kullanıcı sunucuda bulunmuyor.', ephemeral: true });
+                return interaction.reply({ content: '⚠️ İşlem başarısız! Kullanıcı sunucuda bulunmuyor.', ephemeral: true });
             }
         } catch (e) {
             console.error(e);
@@ -609,7 +609,7 @@ client.on('interactionCreate', async interaction => {
             { name: '👤 Susturulan Üye', value: `${target} (${target.id})`, inline: false },
             { name: '👮 Yetkili', value: `${interaction.user}`, inline: true },
             { name: '⏳ Süre', value: timeStr, inline: true },
-            { name: '⚠ Sebep', value: reason, inline: false }
+            { name: '⚠️ Sebep', value: reason, inline: false }
         ];
 
         const timeoutLogEmbed = new EmbedBuilder()
@@ -629,7 +629,7 @@ client.on('interactionCreate', async interaction => {
                 addStat(guildId, interaction.user.id, 'timeout');
                 logGonder(interaction.guild, settings, timeoutLogEmbed);
             } else {
-                return interaction.reply({ content: '⚠️️ İşlem başarısız! Kullanıcı sunucuda bulunmuyor.', ephemeral: true });
+                return interaction.reply({ content: '⚠️ İşlem başarısız! Kullanıcı sunucuda bulunmuyor.', ephemeral: true });
             }
         } catch (e) {
             console.error(e);
@@ -732,7 +732,7 @@ client.on('interactionCreate', async interaction => {
             .setTimestamp();
 
         if (userWarnings.length === 0) { embed.addFields({ name: '✨ Durum', value: 'Bu kullanıcının hiç uyarı kaydı bulunmuyor.', inline: false }); }
-        else { const listText = userWarnings.slice(-5).map(w => `• **ID:** \`#${w.id}\` | **Puan:** \`${w.points > 0 ? '+' + w.points : w.points}\` | **Tarih:** ${w.date}\n  **Sebep:** ${w.reason} *(Yetkili:${w.moderator})*`).join('\n\n'); embed.addFields({ name: '⚠ Son İşlemler / Uyarılar', value: listText, inline: false }); }
+        else { const listText = userWarnings.slice(-5).map(w => `• **ID:** \`#${w.id}\` | **Puan:** \`${w.points > 0 ? '+' + w.points : w.points}\` | **Tarih:** ${w.date}\n  **Sebep:** ${w.reason} *(Yetkili:${w.moderator})*`).join('\n\n'); embed.addFields({ name: '⚠️ Son İşlemler / Uyarılar', value: listText, inline: false }); }
         
         return interaction.reply({ embeds: [embed], ephemeral: true });
     }
