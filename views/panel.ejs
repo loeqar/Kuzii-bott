@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <title>Bot Kontrol Paneli</title>
+</head>
+<body>
+    <h1>Sunucu Koruma Paneli</h1>
+    <form method="POST">
+        <label><input type="checkbox" name="AUTO_PROTECT" <%= settings.AUTO_PROTECT ? 'checked' : '' %>> Otomatik Koruma</label><br>
+        <label><input type="checkbox" name="ANTI_AD" <%= settings.ANTI_AD ? 'checked' : '' %>> Anti Reklam</label><br>
+        <label><input type="checkbox" name="ANTI_BADWORD" <%= settings.ANTI_BADWORD ? 'checked' : '' %>> Küfür Filtresi</label><br>
+        <button type="submit">Kaydet</button>
+    </form>
+</body>
+</html>
