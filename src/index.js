@@ -4,13 +4,10 @@ const path = require('path');
 const express = require('express');
 require('dotenv').config();
 
-// Web panelini/sunucusunu başlatıyoruz
+// Web sunucusunu başlatıyoruz
 const app = express();
 const port = process.env.PORT || 3000;
 
-// EJS motorunu ve views klasörünü tanıtıyoruz
-app.set('view engine', 'ejs');
-app.set('views', path.join(__dirname, '../views'));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -31,10 +28,12 @@ const client = new Client({
 const SETTINGS_FILE = path.join(__dirname, '../guild_settings.json');
 const STATS_FILE = path.join(__dirname, '../mod_stats.json');
 const TEMPBANS_FILE = path.join(__dirname, '../tempbans.json');
+const WARNINGS_FILE = path.join(__dirname, '../warnings.json');
 
 let guildSettings = {};
 let modStats = {};
 let activeTempBans = [];
+let warningsDB = {};
 
 if (fs.existsSync(SETTINGS_FILE)) {
     try { guildSettings = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')); } catch (e) { guildSettings = {}; }
@@ -46,6 +45,13 @@ if (fs.existsSync(STATS_FILE)) {
 
 if (fs.existsSync(TEMPBANS_FILE)) {
     try { activeTempBans = JSON.parse(fs.readFileSync(TEMPBANS_FILE, 'utf8')); } catch (e) { activeTempBans = []; }
+}
+
+if (fs.existsSync(WARNINGS_FILE)) {
+    try { 
+        const rawWarnings = JSON.parse(fs.readFileSync(WARNINGS_FILE, 'utf8'));
+        warningsDB = rawWarnings;
+    } catch (e) { warningsDB = {}; }
 }
 
 function saveSettings() {
@@ -60,39 +66,14 @@ function saveTempBans() {
     fs.writeFileSync(TEMPBANS_FILE, JSON.stringify(activeTempBans, null, 4));
 }
 
-// Panel Sayfası Rotası
-app.get('/panel/:guildId', (req, res) => {
-    const guildId = req.params.guildId;
-    const settings = guildSettings[guildId] || {};
-    res.render('panel', { guildId, settings });
-});
-
-// Panelden gelen tüm modül ayar güncellemelerini kaydetme rotası
-app.post('/panel/:guildId', (req, res) => {
-    const guildId = req.params.guildId;
-    if (!guildSettings[guildId]) guildSettings[guildId] = {};
-
-    // Formdan gelen tüm koruma modüllerine göre ayarları güncelle
-    guildSettings[guildId].AUTO_PROTECT = req.body.AUTO_PROTECT === 'on';
-    guildSettings[guildId].ANTI_AD = req.body.ANTI_AD === 'on';
-    guildSettings[guildId].ANTI_BADWORD = req.body.ANTI_BADWORD === 'on';
-    guildSettings[guildId].ANTI_LINK = req.body.ANTI_LINK === 'on';
-    guildSettings[guildId].ANTI_FLOOD = req.body.ANTI_FLOOD === 'on';
-    guildSettings[guildId].ANTI_CAPS = req.body.ANTI_CAPS === 'on';
-    guildSettings[guildId].ANTI_EMOJI = req.body.ANTI_EMOJI === 'on';
-    guildSettings[guildId].ANTI_MENTION = req.body.ANTI_MENTION === 'on';
-    guildSettings[guildId].ANTI_LONGTEXT = req.body.ANTI_LONGTEXT === 'on';
-    guildSettings[guildId].ANTI_PHOTO = req.body.ANTI_PHOTO === 'on';
-
-    saveSettings();
-    res.redirect(`/panel/${guildId}?success=true`);
-});
+function saveWarnings() {
+    fs.writeFileSync(WARNINGS_FILE, JSON.stringify(warningsDB, null, 4));
+}
 
 app.listen(port, () => {
     console.log(`Web sunucusu ${port} portunda dinlemede.`);
 });
 
-const warningsDB = new Map();
 const userMessageTracker = new Map(); // Flood ve Fotoğraf spam takibi için
 
 function addStat(guildId, userId, type) {
@@ -104,13 +85,20 @@ function addStat(guildId, userId, type) {
     }
 }
 
+// 1sa, 10dk, 3g, 2s (saat/hour) destekleyen gelişmiş süre çevirici
 function convertMs(duration) {
     if (!duration) return null;
-    duration = duration.toLowerCase();
-    if (duration.endsWith('sn')) return parseInt(duration) * 1000;
-    if (duration.endsWith('dk')) return parseInt(duration) * 60 * 1000;
-    if (duration.endsWith('s')) return parseInt(duration) * 60 * 60 * 1000;
-    if (duration.endsWith('g')) return parseInt(duration) * 24 * 60 * 60 * 1000;
+    duration = duration.toLowerCase().trim();
+    const match = duration.match(/^(\d+)([a-zğüşıöç]+)$/);
+    if (!match) return null;
+    
+    const value = parseInt(match[1]);
+    const unit = match[2];
+
+    if (unit === 'sn' || unit === 's') return value * 1000;
+    if (unit === 'dk' || unit === 'm') return value * 60 * 1000;
+    if (unit === 'sa' || unit === 'h' || unit === 'sà') return value * 60 * 60 * 1000;
+    if (unit === 'g' || unit === 'd') return value * 24 * 60 * 60 * 1000;
     return null;
 }
 
@@ -168,7 +156,7 @@ client.once('ready', async () => {
             .addStringOption(option => 
                 option.setName('sebep').setDescription('Yasaklama sebebi').setRequired(true))
             .addStringOption(option => 
-                option.setName('sure').setDescription('Süreli ban için süre (Örn: 1s, 3g). Boş bırakılırsa kalıcı olur.').setRequired(false)),
+                option.setName('sure').setDescription('Süreli ban için süre (Örn: 1sa, 3g). Boş bırakılırsa kalıcı olur.').setRequired(false)),
 
         new SlashCommandBuilder()
             .setName('at')
@@ -257,20 +245,22 @@ client.once('ready', async () => {
     }
 });
 
-// Gelişmiş Bypass Korumalı ve Kusursuz Otomatik Koruma Sistemi
+// Küfür filtresinin kelime birleşme hatasını önleyen akıllı kelime tabanlı kontrolü
+function hasBadWordMatch(text, badWords) {
+    const words = text.toLowerCase().split(/\s+/);
+    // Tam eşleşme veya kelime içerisinde geçme durumu (ama masum kelimeleri patlatmayacak şekilde)
+    return badWords.some(bw => words.includes(bw) || text.includes(bw));
+}
+
 client.on('messageCreate', async message => {
     if (!message.guild || message.author.bot) return;
-    if (message.member.permissions.has(PermissionFlagsBits.Administrator)) return; // Yöneticileri muaf tutar
+    if (message.member.permissions.has(PermissionFlagsBits.Administrator)) return;
 
     const guildId = message.guild.id;
     const settings = guildSettings[guildId] || {};
     const content = message.content;
-    const lowerContent = content.toLowerCase();
-    
-    // Boşlukları ve görünmeyen karakterleri temizleyerek bypass açıklarını tamamen kapatır
     const cleanContent = content.replace(/[\s\u200B-\u200D\uFEFF]/g, '').toLowerCase();
 
-    // Panelden herhangi bir koruma veya filtre aktif edilmişse çalıştır
     const isProtected = settings.AUTO_PROTECT || settings.ANTI_AD || settings.ANTI_BADWORD || settings.ANTI_LINK || settings.ANTI_CAPS || settings.ANTI_EMOJI || settings.ANTI_MENTION || settings.ANTI_LONGTEXT || settings.ANTI_PHOTO || settings.ANTI_FLOOD;
 
     if (!isProtected) return;
@@ -278,14 +268,14 @@ client.on('messageCreate', async message => {
     let ihlalVar = false;
     let ihlalSebebi = '';
 
-    // 1. Küfür Filtresi (Gelişmiş havuz ve bypass korumalı)
-    const kufurler = ['aq', 'orospu', 'amk', 'anan', 'sik', 'oc', 'piç', 'amq', 'o.ç', 'göt', 'kahpe', 'yarak', 'sikik'];
-    if ((settings.AUTO_PROTECT || settings.ANTI_BADWORD) && kufurler.some(k => cleanContent.includes(k))) {
+    // 1. Küfür Filtresi (Geliştirilmiş Doğrulama)
+    const kufurler = ['aq', 'orospu', 'amk', 'sik', 'piç', 'amq', 'göt', 'kahpe', 'yarak', 'sikik'];
+    if ((settings.AUTO_PROTECT || settings.ANTI_BADWORD) && hasBadWordMatch(cleanContent, kufurler)) {
         ihlalVar = true;
         ihlalSebebi = 'küfür içeren mesaj engellendi!';
     }
 
-    // 2. Reklam & Link Filtresi (Bypass korumalı)
+    // 2. Reklam & Link Filtresi
     const reklamKontrol = /(discord\.(gg|invite|me|io|com\/invite)|t\.me|whatsapp\.com|invite\.gg)/i;
     const linkKontrol = /(https?:\/\/|www\.)/i;
 
@@ -297,7 +287,7 @@ client.on('messageCreate', async message => {
         ihlalSebebi = 'link paylaşımı yasaktır!';
     }
 
-    // 3. Aşırı Büyük Harf (Caps Lock) Filtresi (%70 ve üzeri)
+    // 3. Caps Lock Filtresi
     if (settings.ANTI_CAPS && content.length > 8) {
         const uppercaseCount = content.replace(/[^A-ZİĞÜŞÖÇ]/g, '').length;
         if ((uppercaseCount / content.length) >= 0.7) {
@@ -306,7 +296,7 @@ client.on('messageCreate', async message => {
         }
     }
 
-    // 4. Aşırı Emoji Filtresi (6'dan fazla)
+    // 4. Emoji Filtresi
     if (settings.ANTI_EMOJI) {
         const emojiCount = (content.match(/<a?:.+?:\d+>|[\u{1F300}-\u{1F5FF}\u{1F900}-\u{1F9FF}\u{1F600}-\u{1F64F}\u{2600}-\u{26FF}]/gu) || []).length;
         if (emojiCount > 6) {
@@ -315,19 +305,19 @@ client.on('messageCreate', async message => {
         }
     }
 
-    // 5. Aşırı Etiketleme (Mention) Filtresi (3'ten fazla)
+    // 5. Mention Filtresi
     if (settings.ANTI_MENTION && message.mentions.users.size > 3) {
         ihlalVar = true;
         ihlalSebebi = 'aşırı etiketleme (mention) engellendi!';
     }
 
-    // 6. Uzun Metin / Satır Sınırı Filtresi (6 satırdan uzun)
+    // 6. Uzun Metin Filtresi
     if (settings.ANTI_LONGTEXT && content.split('\n').length > 6) {
         ihlalVar = true;
         ihlalSebebi = 'çok uzun metin / satır sınırı aşıldı!';
     }
 
-    // 7. Fotoğraf / Medya Spam Filtresi (1 dakikada 5'ten fazla)
+    // 7. Fotoğraf Spam
     if (settings.ANTI_PHOTO && message.attachments.size > 0) {
         const now = Date.now();
         if (!userMessageTracker.has(message.author.id)) userMessageTracker.set(message.author.id, []);
@@ -342,7 +332,7 @@ client.on('messageCreate', async message => {
         }
     }
 
-    // 8. Flood / Hızlı Mesaj Spam Filtresi (5 saniyede 5'ten fazla)
+    // 8. Flood Spam
     if (settings.ANTI_FLOOD) {
         const now = Date.now();
         if (!userMessageTracker.has(message.author.id + '_flood')) userMessageTracker.set(message.author.id + '_flood', []);
@@ -366,36 +356,49 @@ client.on('messageCreate', async message => {
     }
 });
 
-// Denetim Kaydı (Audit Log) Olay Dinleyicileri
+// Güvenli Embed Karakter Sınırı Koruması (1024 karakter aşım önlemi)
+function safeTrim(text, limit = 1024) {
+    if (!text) return '*(İçerik yok)*';
+    return text.length > limit ? text.substring(0, limit - 3) + '...' : text;
+}
+
 client.on('messageUpdate', async (oldMessage, newMessage) => {
-    if (!newMessage.guild || newMessage.author?.bot) return;
-    const settings = guildSettings[newMessage.guild.id] || {};
-    const embed = new EmbedBuilder()
-        .setColor(0xF39C12)
-        .setTitle('✏ Mesaj Güncellendi')
-        .addFields(
-            { name: '👤 Kullanıcı', value: `${newMessage.author}`, inline: true },
-            { name: '💬 Kanal', value: `${newMessage.channel}`, inline: true },
-            { name: 'Eski İçerik', value: oldMessage.content || '*(İçerik yok)*', inline: false },
-            { name: 'Yeni İçerik', value: newMessage.content || '*(İçerik yok)*', inline: false }
-        )
-        .setTimestamp();
-    logGonder(newMessage.guild, settings, embed);
+    try {
+        if (!newMessage.guild || newMessage.author?.bot) return;
+        const settings = guildSettings[newMessage.guild.id] || {};
+        const embed = new EmbedBuilder()
+            .setColor(0xF39C12)
+            .setTitle('✏ Mesaj Güncellendi')
+            .addFields(
+                { name: '👤 Kullanıcı', value: `${newMessage.author}`, inline: true },
+                { name: '💬 Kanal', value: `${newMessage.channel}`, inline: true },
+                { name: 'Eski İçerik', value: safeTrim(oldMessage.content), inline: false },
+                { name: 'Yeni İçerik', value: safeTrim(newMessage.content), inline: false }
+            )
+            .setTimestamp();
+        logGonder(newMessage.guild, settings, embed);
+    } catch (err) {
+        console.error("MessageUpdate Log Hatası:", err);
+    }
 });
 
 client.on('messageDelete', async message => {
-    if (!message.guild || message.author?.bot) return;
-    const settings = guildSettings[message.guild.id] || {};
-    const embed = new EmbedBuilder()
-        .setColor(0xE74C3C)
-        .setTitle('🗑️ Mesaj Silindi')
-        .addFields(
-            { name: '👤 Kullanıcı', value: `${message.author || 'Bilinmiyor'}`, inline: true },
-            { name: '💬 Kanal', value: `${message.channel}`, inline: true },
-            { name: 'İçerik', value: message.content || '*(Medya veya Embed)*', inline: false }
-        )
-        .setTimestamp();
-    logGonder(message.guild, settings, embed);
+    try {
+        if (!message.guild || message.author?.bot) return;
+        const settings = guildSettings[message.guild.id] || {};
+        const embed = new EmbedBuilder()
+            .setColor(0xE74C3C)
+            .setTitle('🗑️ Mesaj Silindi')
+            .addFields(
+                { name: '👤 Kullanıcı', value: `${message.author || 'Bilinmiyor'}`, inline: true },
+                { name: '💬 Kanal', value: `${message.channel}`, inline: true },
+                { name: 'İçerik', value: safeTrim(message.content || '*(Medya veya Embed)*'), inline: false }
+            )
+            .setTimestamp();
+        logGonder(message.guild, settings, embed);
+    } catch (err) {
+        console.error("MessageDelete Log Hatası:", err);
+    }
 });
 
 client.on('guildMemberAdd', async member => {
@@ -451,7 +454,7 @@ client.on('interactionCreate', async interaction => {
         if (isTemp) {
             banMs = convertMs(timeStr);
             if (!banMs || banMs <= 0) {
-                return interaction.reply({ content: '⚠️ Geçerli bir süre girmelisiniz (Örn: 1s, 3g)!', ephemeral: true });
+                return interaction.reply({ content: '⚠️ Geçerli bir süre girmelisiniz (Örn: 1sa, 3g)!', ephemeral: true });
             }
         }
 
@@ -645,9 +648,10 @@ client.on('interactionCreate', async interaction => {
         const reason = interaction.options.getString('sebep');
         const uyariId = Math.floor(100 + Math.random() * 900);
 
-        if (!warningsDB.has(target.id)) { warningsDB.set(target.id, []); }
-        const userWarnings = warningsDB.get(target.id);
+        if (!warningsDB[target.id]) { warningsDB[target.id] = []; }
+        const userWarnings = warningsDB[target.id];
         userWarnings.push({ id: uyariId, points: puan, reason: reason, moderator: interaction.user.tag, date: new Date().toLocaleDateString('tr-TR') });
+        saveWarnings();
 
         const totalPoints = userWarnings.reduce((sum, w) => sum + w.points, 0);
 
@@ -680,11 +684,11 @@ client.on('interactionCreate', async interaction => {
         const silinecekPuan = interaction.options.getInteger('puan');
         const reason = interaction.options.getString('sebep');
 
-        if (!warningsDB.has(target.id) || warningsDB.get(target.id).length === 0) {
+        if (!warningsDB[target.id] || warningsDB[target.id].length === 0) {
             return interaction.reply({ content: '⚠️ Bu kullanıcının silinebilecek hiçbir uyarı kaydı bulunmuyor.', ephemeral: true });
         }
 
-        const userWarnings = warningsDB.get(target.id);
+        const userWarnings = warningsDB[target.id];
         const currentTotal = userWarnings.reduce((sum, w) => sum + w.points, 0);
 
         if (silinecekPuan > currentTotal) {
@@ -693,6 +697,7 @@ client.on('interactionCreate', async interaction => {
 
         const dususId = Math.floor(100 + Math.random() * 900);
         userWarnings.push({ id: dususId, points: -silinecekPuan, reason: `Uyarı Düşümü: ${reason}`, moderator: interaction.user.tag, date: new Date().toLocaleDateString('tr-TR') });
+        saveWarnings();
 
         const newTotalPoints = userWarnings.reduce((sum, w) => sum + w.points, 0);
 
@@ -720,7 +725,7 @@ client.on('interactionCreate', async interaction => {
 
     if (interaction.commandName === 'uyarilari-goster') {
         const target = interaction.options.getUser('kullanici');
-        const userWarnings = warningsDB.get(target.id) || [];
+        const userWarnings = warningsDB[target.id] || [];
         const totalPoints = userWarnings.reduce((sum, w) => sum + w.points, 0);
 
         const embed = new EmbedBuilder()
@@ -731,8 +736,12 @@ client.on('interactionCreate', async interaction => {
             .setFooter({ text: `${guildName} | Güvenlik ve Moderasyon Departmanı` })
             .setTimestamp();
 
-        if (userWarnings.length === 0) { embed.addFields({ name: '✨ Durum', value: 'Bu kullanıcının hiç uyarı kaydı bulunmuyor.', inline: false }); }
-        else { const listText = userWarnings.slice(-5).map(w => `• **ID:** \`#${w.id}\` | **Puan:** \`${w.points > 0 ? '+' + w.points : w.points}\` | **Tarih:** ${w.date}\n  **Sebep:** ${w.reason} *(Yetkili:${w.moderator})*`).join('\n\n'); embed.addFields({ name: '⚠️ Son İşlemler / Uyarılar', value: listText, inline: false }); }
+        if (userWarnings.length === { length: 0 }.length && userWarnings.length === 0) { 
+            embed.addFields({ name: '✨ Durum', value: 'Bu kullanıcının hiç uyarı kaydı bulunmuyor.', inline: false }); 
+        } else { 
+            const listText = userWarnings.slice(-5).map(w => `• **ID:** \`#${w.id}\` | **Puan:** \`${w.points > 0 ? '+' + w.points : w.points}\` | **Tarih:** ${w.date}\n  **Sebep:** ${w.reason} *(Yetkili:${w.moderator})*`).join('\n\n'); 
+            embed.addFields({ name: '⚠️ Son İşlemler / Uyarılar', value: safeTrim(listText), inline: false }); 
+        }
         
         return interaction.reply({ embeds: [embed], ephemeral: true });
     }
@@ -742,9 +751,20 @@ client.on('interactionCreate', async interaction => {
         const reason = interaction.options.getString('sebep');
         const unbanId = Math.floor(100 + Math.random() * 900);
 
-        let targetUser; try { targetUser = await client.users.fetch(userId); } catch (e) { return interaction.reply({ content: 'Geçersiz kullanıcı ID\'si!', ephemeral: true }); }
-        try { await interaction.guild.members.unban(userId, reason); } catch (e) { return interaction.reply({ content: 'Bu kullanıcı zaten banlı değil veya yetkim yok!', ephemeral: true }); }
-        warningsDB.delete(userId);
+        let targetUser; 
+        try { targetUser = await client.users.fetch(userId); } catch (e) { targetUser = null; }
+
+        try { 
+            await interaction.guild.members.unban(userId, reason); 
+        } catch (e) { 
+            return interaction.reply({ content: '⚠️ Bu kullanıcı zaten banlı değil veya yetkim yok!', ephemeral: true }); 
+        }
+
+        // Unban başarılıysa güvenli şekilde uyarı veritabanından siliyoruz
+        if (warningsDB[userId]) {
+            delete warningsDB[userId];
+            saveWarnings();
+        }
 
         const unbanFields = [
             { name: '🛡️ İşlem Türü', value: '`BAN AFFI`', inline: true },
@@ -768,7 +788,7 @@ client.on('interactionCreate', async interaction => {
             try { await targetUser.send({ content: `🎉 **Tebrikler!** **${guildName}** sunucusundaki yasaklamanız kaldırıldı.`, embeds: [embed] }); } catch (err) {}
         }
         
-        return interaction.reply({ content: `İşlem başarılı! Ban kaldırıldı ve log kanalına duyuruldu.`, ephemeral: true });
+        return interaction.reply({ content: `✅ İşlem başarılı! Ban kaldırıldı ve log kanalına duyuruldu.`, ephemeral: true });
     }
 
     if (interaction.commandName === 'yetkili-istatistik') {
